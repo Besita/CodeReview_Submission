@@ -1,0 +1,36 @@
+name: code-review-env
+
+description: >
+  A real-world OpenEnv environment for automated code review using semantic evaluation.
+  The agent identifies issues, suggests fixes, and provides reasoning.
+  Supports multi-step interaction with reward shaping based on issue detection,
+  fix quality, reasoning, and severity alignment.
+
+entrypoint: server.app:app
+
+tags:
+  - code-review
+  - llm-evaluation
+  - reinforcement-learning
+  - real-world
+
+observation_space:
+  code: str
+  score: float
+  feedback: str
+  done: bool
+
+action_space:
+  issues: list[str]
+  severity: enum[low, medium, high]
+  suggestion: str
+  reasoning: str
+
+reward:
+  type: float
+  range: [0.0, 1.0]
+  description: >
+    Reward is based on semantic matching of issues, fix quality,
+    reasoning alignment, and severity correctness.
+    Includes penalties for hallucinations and missing issues,
+    and bonuses for progress across steps.

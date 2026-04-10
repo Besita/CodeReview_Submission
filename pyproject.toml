@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "code-review-env"
+version = "1.0.0"
+description = "OpenEnv environment for automated code review using LLMs"
+authors = [
+    { name = "Besita Augustin", email = "besita2000@gmail.com" }
+]
+
+dependencies = [
+    "pydantic",
+    "openenv-core>=0.2.0",
+    "fastapi",
+    "uvicorn",
+    "sentence-transformers",
+    "scikit-learn",
+    "numpy",
+    "openai"
+]
+
+[project.scripts]
+server = "server.app:main"
+
+[tool.setuptools.packages.find]
+where = ["."]

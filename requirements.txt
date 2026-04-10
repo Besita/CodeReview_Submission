@@ -1,0 +1,9 @@
+uvicorn
+openenv_core
+requests
+openai>=1.0.0
+numpy
+pydantic    
+fastapi
+scikit-learn
+typer
