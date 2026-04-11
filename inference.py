@@ -175,7 +175,6 @@ def grade_master_fix(master_fix, audit_trail):
     return max(0.1, min(round(score, 2), 0.95))
 
 
-
 # =========================
 # Utilities
 # =========================
@@ -258,14 +257,14 @@ def grade(task, action: CodeReviewAction, step_num: int, previous_issues: list):
     final_reward = base_score * multiplier
     
     # Clip to reasonable bounds
-    return max(1e-6, round(final_reward, 2))
+    return max(0.1, min(round(final_reward, 2), 0.95))
 
 
 # =========================
 # Inference / Runner
 # ========================
 
-SUCCESS_THRESHOLD = 0.5  # reward needed to consider task successful
+SUCCESS_THRESHOLD = 0.4  # reward needed to consider task successful
 
 def run_task(task_name: str):
     env = CodeReviewEnv()
