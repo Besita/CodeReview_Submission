@@ -21,11 +21,11 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if HF_TOKEN is None:
     raise ValueError("HF_TOKEN environment variable is required")
 
-if OPENAI_API_KEY is None:
-    raise ValueError("OPENAI_API_KEY environment variable is required")
-
 if not API_BASE_URL:
     raise ValueError("API_BASE_URL not set")
+
+if OPENAI_API_KEY is None:
+    OPENAI_API_KEY = HF_TOKEN  # required for client init but not validated
 
 # Initialize OpenAI client
 client = OpenAI(
