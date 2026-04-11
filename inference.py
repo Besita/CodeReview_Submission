@@ -1,8 +1,4 @@
 import os
-
-# Retrieve the token from the environment
-token = os.getenv("HF_TOKEN")
-
 import json
 import ast  
 import re
@@ -16,27 +12,29 @@ from utils.embeddings_util import cosine_similarity, safe_embedding
 # ENV VARIABLES
 # =========================
 
+# Read environment variables with defaults where required
+API_BASE_URL = os.getenv("API_BASE_URL")
+MODEL_NAME = os.getenv("MODEL_NAME")
+HF_TOKEN = os.getenv("HF_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
+if HF_TOKEN is None:
+    raise ValueError("HF_TOKEN environment variable is required")
 
-API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
-API_KEY = os.getenv("OPENAI_API_KEY")
+if OPENAI_API_KEY is None:
+    raise ValueError("OPENAI_API_KEY environment variable is required")
 
 if not API_BASE_URL:
     raise ValueError("API_BASE_URL not set")
 
+# Initialize OpenAI client
+client = OpenAI(
+    base_url=API_BASE_URL,
+    api_key=OPENAI_API_KEY
+)
+
 TASK_NAMES  = ["easy", "medium", "hard"]
 MAX_STEPS = 5  # single-step env
-
-# Initialize client
-if not API_KEY:
-    print("[WARNING] OPENAI_API_KEY not set. Using fallback mode.")
-    client = None
-else:
-    client = OpenAI(
-        base_url=API_BASE_URL,
-        api_key=API_KEY,
-    )
 
 def safe_parse_json(content: str) -> dict:
     try:
@@ -69,7 +67,7 @@ def call_llm(prompt):
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
             temperature=0
         )
@@ -204,38 +202,33 @@ SUCCESS_THRESHOLD = 0.35  # reward needed to consider task successful
 def run_task(task_name: str):
     env = CodeReviewEnv()
     task = TASKS[task_name]
-    
-    #print(f"🐛 TARGET: {task_name}")
-    #print(f"🐛 EXPECT:  {repr(task['code'][:60])}")
-    
-    # METHOD 1: Reset + FORCE observation refresh via dummy step
+
     obs = env.reset(seed=42, episode_id=task_name)
-    
-    # Monkey-patch observation DIRECTLY (works around _state bug)
-    obs.code = task["code"]  
+
+    obs.code = task["code"]
     obs.feedback = ""
     obs.score = 0.0
     obs.remaining_issues = task["expected"]["issues"].copy()
-    
-    # Update internal state too
+
     env._state.task_id = task_name
     env._state.task = task
-    env._state.code = task["code"] 
+    env._state.code = task["code"]
     env._state.remaining_issues = task["expected"]["issues"].copy()
-    
-    #print(f"🐛 OBS NOW: {repr(obs.code[:60])}")
-    
+
     feedback = ""
     rewards = []
     success = False
-    
+
+    # ✅ REQUIRED FORMAT FIX
+    print(
+        f"[START] task={task_name} env=code-review model={MODEL_NAME}",
+        flush=True
+    )
+
     try:
-    # Rest of your loop unchanged...
         for step in range(1, MAX_STEPS + 1):
-            # Your existing prompt/response/action code...
 
             prompt_text = build_prompt(obs.code, feedback)
-
             response = call_llm(prompt_text)
 
             if response is None:
@@ -246,45 +239,43 @@ def run_task(task_name: str):
                     "reasoning": "LLM not available, using fallback"
                 }
             else:
-                content = response.strip()  
-                # remove accidental repetition (basic guard)
+                content = response.strip()
                 content = content.split("}{")[0] + "}" if "}{" in content else content
                 parsed = safe_parse_json(content)
-
-            '''if parsed is None:
-                print(f"[STEP] step={step} action=null reward=0.00 done=true error=parse_failed")
-                break'''
 
             action = CodeReviewAction(**parsed)
 
             obs, reward, done, info = env.step(action)
 
-            # 🔥 FIX 2: Override broken remaining/done logic
+	        # 🔥 FIX 2: Override broken remaining/done logic
             unmatched = [i for i in task["expected"]["issues"] 
                         if not any(similar(i, p) for p in (action.issues or []))]
+
             obs.remaining_issues = unmatched
             done = len(unmatched) == 0  # Continue until ALL issues fixed
 
             rewards.append(reward)
 
-            feedback = f"""
-                Score: {obs.score}
-                Feedback: {obs.feedback}
-                Remaining issues: {obs.remaining_issues}
-                """
+            error = info.get("last_action_error", None) if isinstance(info, dict) else None
 
             print(
                 f"[STEP] step={step} "
                 f"action={json.dumps(parsed)} "
                 f"reward={reward:.2f} "
                 f"done={str(done).lower()} "
-                f"remaining={len(obs.remaining_issues)} "
-                f"error=null"
+                f"error={error if error else 'null'}",
+                flush=True
             )
+
+            feedback = f"""
+            	Score: {obs.score}
+            	Feedback: {obs.feedback}
+            	Remaining issues: {obs.remaining_issues}
+                """ 
 
             # stop if no improvement
             if len(rewards) >= 2 and rewards[-1] <= rewards[-2]:
-                print("[INFO] No improvement, stopping early")
+                print(f"INFO =  No improvement, stopping early")
                 success = max(rewards) >= 0.6
                 break
 
@@ -292,32 +283,29 @@ def run_task(task_name: str):
                 success = True
                 break
 
-            
     except Exception as e:
         print(
-            f"[STEP] step={step} action=null reward=0.00 done=true error={str(e)}"
+            f"[STEP] step={step} action=null reward=0.00 done=true error={str(e)}",
+            flush=True
         )
         success = False
 
     finally:
         env.close()
 
+        # ✅ REQUIRED FORMAT FIX
         rewards_str = ",".join([f"{r:.2f}" for r in rewards])
 
         print(
             f"[END] success={str(success).lower()} "
             f"steps={len(rewards)} "
-            f"rewards={rewards_str}"
+            f"rewards={rewards_str}",
+            flush=True
         )
-
 
 # =========================
 # Entry point
 # =========================
-
-#if __name__ == "__main__":
-#    for task in TASKS:
-#        run_task(task)
 
 if __name__ == "__main__":
     try:
