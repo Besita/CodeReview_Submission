@@ -29,7 +29,7 @@ class CodeReviewAction(Action):
 
 class CodeReviewObservation(Observation):
     code: str 
-    score: float = 0.0
+    score: float = 0.1
     feedback: str = ""    
     done: bool = False
     remaining_issues: List[str] = Field(default_factory=list)
