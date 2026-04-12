@@ -30,5 +30,11 @@ app = create_fastapi_app(
 async def root():
     return {"message": "Server is running!"}
 
-if __name__ == "__main__":
+def main():
+    print("[SERVER] Starting CodeReview environment...")
     uvicorn.run("server.app:app", host="0.0.0.0", port=7860,workers=1)
+
+if __name__ == "__main__":
+    main()
+
+    
