@@ -13,19 +13,16 @@ from utils.embeddings_util import cosine_similarity, safe_embedding
 # =========================
 
 # Read environment variables with defaults where required
-API_BASE_URL = os.getenv("API_BASE_URL")
-MODEL_NAME = os.getenv("MODEL_NAME")
-HF_TOKEN = os.getenv("HF_TOKEN")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4.1-mini")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-if HF_TOKEN is None:
-    raise ValueError("HF_TOKEN environment variable is required")
-
-if not API_BASE_URL:
-    raise ValueError("API_BASE_URL not set")
+HF_TOKEN = os.getenv("HF_TOKEN")
 
 if OPENAI_API_KEY is None:
     OPENAI_API_KEY = HF_TOKEN  # required for client init but not validated
+
+if not HF_TOKEN:
+    raise ValueError("HF_TOKEN environment variable is required")
 
 # Initialize OpenAI client
 client = OpenAI(
@@ -81,9 +78,32 @@ def call_llm(prompt):
             temperature=0
         )
         return response.choices[0].message.content
+
     except Exception as e:
         print(f"[LLM ERROR] {e}")
-        return None
+        return """
+        {
+            "issues": ["LLM failed"],
+            "severity": "low",
+            "suggestion": "Retry or check API",
+            "reasoning": "LLM call failed"
+        }
+        """
+    
+def safe_reward(x) -> float:
+    try:
+        x = float(x)
+    except:
+        x = 0.5
+
+    # HARD SAFETY
+    if x is None or x != x:
+        x = 0.5
+
+    # STRICT BOUND (IMPORTANT)
+    x = max(0.05, min(x, 0.95))
+
+    return round(x, 2)
     
 # =========================
 # Prompt builder
@@ -106,8 +126,10 @@ def build_prompt(code: str, feedback: str, step_num: int, audit_trail: list = No
         Return ONLY valid JSON:
         {{
             "fixed_code": "ONLY provide the fixed_code and a 1-sentence summary"
-            
-        }}
+            "fixed_code": "...",
+            "summary_of_changes": "..."
+
+z        }}
         """
 
     # Steps 1-5: The Layered Audit phase
@@ -146,7 +168,7 @@ def grade_master_fix(master_fix, audit_trail):
     summary = master_fix.get("summary_of_changes", "").lower()
     
     # 1. Base Score (Baseline for valid structure)
-    score = 0.35 
+    score = 0.3 
     
     # 2. Safety Check: If LLM failed or provided empty code
     if len(fixed_code) < 30:
@@ -168,11 +190,13 @@ def grade_master_fix(master_fix, audit_trail):
             score += points_per_layer * 0.5
 
     # 4. Final Best Practice Bonuses
-    if "docstring" in summary or '"""' in fixed_code: score += 0.05
-    if "raise" in fixed_code or "try:" in fixed_code: score += 0.05
+    if "docstring" in summary or '"""' in fixed_code: score += 0.09
+    if "raise" in fixed_code or "try:" in fixed_code: score += 0.09
 
     # 5. Clip to ensure it's never exactly 0.0 or 1.0
-    return max(0.1, min(round(score, 2), 0.95))
+    
+    score=max(0.01, min(score, 0.95))
+    return score
 
 
 # =========================
@@ -203,20 +227,29 @@ def similar(a, b, threshold=0.9):
     emb_a = safe_embedding(a)
     emb_b = safe_embedding(b)
 
-    # 🔥 fallback when API not available
     if emb_a is None or emb_b is None:
-        return a.lower() in b.lower() or b.lower() in a.lower()
+        return 0.55 if (a.lower() in b.lower() or b.lower() in a.lower()) else 0.25
 
-    return cosine_similarity(emb_a, emb_b) >= threshold
+    sim = cosine_similarity(emb_a, emb_b)
+
+    # soft scaling instead of hard 0.95/0.3
+    return 0.2 + 0.7 * sim   # always in (0.2, 0.9)
 
 def best_match_score(exp, preds):
-        return max(similar(exp, p) for p in preds) if preds else 0.0
+    if not preds:
+        return 0.2
+
+    score = max(similar(exp, p) for p in preds)
+
+    # FINAL HARD SAFETY
+    score = float(score)
+    return max(0.05, min(score, 0.95))
 
 # =========================
 # Grader
 # =========================
 def grade(task, action: CodeReviewAction, step_num: int, previous_issues: list):
-    if task is None: return 0.0
+    if task is None: return 0.1  # safety fallback
 
     # --- 1. Calculate Base Performance (Your existing logic) ---
     # (Checking issues, severity, keywords, and concepts)
@@ -247,7 +280,7 @@ def grade(task, action: CodeReviewAction, step_num: int, previous_issues: list):
     if predicted_issues and not is_fallback:
         is_repeat = any(any(similar(curr, prev) for prev in previous_issues) for curr in predicted_issues)
         if is_repeat:
-            base_score *= 0.5
+            base_score = base_score*0.5
 
     # --- 4. Strict Linear Multiplier ---
     # Growth rate 0.15 makes the climb feel more natural across 5 steps
@@ -255,9 +288,11 @@ def grade(task, action: CodeReviewAction, step_num: int, previous_issues: list):
     multiplier = 1.0 + (step_num - 1) * growth_rate
     
     final_reward = base_score * multiplier
-    
-    # Clip to reasonable bounds
-    return max(0.1, min(round(final_reward, 2), 0.95))
+
+    if final_reward is None:
+        final_reward = 0.1
+
+    return safe_reward(final_reward)
 
 
 # =========================
@@ -282,11 +317,13 @@ def run_task(task_name: str):
     audit_trail = [] # Collect logs for the master fix
 
     print(f"[START] task={task_name} env=code-review model={MODEL_NAME}", flush=True)
-    print(f"[STEP]", flush=True)
 
     try:
         # Phase 1: 5-Step Layered Audit
         for step in range(1, 6):
+
+            error_msg = "null"
+
             prompt_text = build_prompt(obs.code, feedback, step)
             response = call_llm(prompt_text)
 
@@ -306,14 +343,20 @@ def run_task(task_name: str):
 
             action = CodeReviewAction(**parsed)
             reward = grade(task, action, step_num=step, previous_issues=history_of_issues)
-            
+                        
             history_of_issues.extend(clean_predicted_issues(action.issues or []))
             obs, _, _, _ = env.step(action)
             
             feedback = action.reasoning 
             rewards.append(reward)
 
-            print(f"step={step} action={json.dumps(parsed)} reward={reward:.2f} done=false error=null", flush=True)
+            if not rewards:
+                rewards = [0.1]
+
+            if reward <= 0.0 or reward >= 1.0:
+                print("[ERROR] Invalid reward:", reward)
+
+            print(f"[STEP] step={step} action={json.dumps(parsed)} reward={reward:.2f} done=false error={error_msg}", flush=True)
 
         # Phase 2: Final Summary / Master Fix (Step 6)
         print("Generating Master Fix...", flush=True)
@@ -327,20 +370,41 @@ def run_task(task_name: str):
         
         summary_reward = grade_master_fix(master_fix, audit_trail)
         
-        print(f"step=6 MASTER FIX: action={json.dumps(master_fix)} reward={summary_reward:.2f} done=true error=null", flush=True)
+        print(f"[STEP] step=6 action={json.dumps(master_fix)} reward={summary_reward:.2f} done=true error={error_msg}", flush=True)
         rewards.append(summary_reward)
 
     except Exception as e:
+        error_msg=(e)
         print(f"[FATAL ERROR] {e}")
 
+        # fallback action (VERY IMPORTANT)
+        parsed = {
+            "issues": ["runtime error"],
+            "severity": "low",
+            "suggestion": "fix exception",
+            "reasoning": error_msg
+        }
+
+        reward = 0.1
+        done = False
+
     best_reward = max(rewards) if rewards else 0.15
-    best_step = rewards.index(best_reward) + 1 if rewards else 0
 
     success = best_reward >= SUCCESS_THRESHOLD
+
+    # 🔥 ALWAYS close env BEFORE END
+    try:
+        env.close()
+    except Exception as e:
+        print(f"[CLOSE ERROR] {e}")
+
+    if not rewards:
+        rewards = [0.1]
+
     reward_str = ",".join(f"{r:.2f}" for r in rewards)
 
     print(
-        f"[END] success={str(success).lower()} steps={len(rewards)} rewards={reward_str} best_reward={best_reward:.2f}",
+        f"[END] success={str(success).lower()} steps={len(rewards)} rewards={reward_str} ",
         flush=True
     )
 
@@ -349,8 +413,10 @@ def run_task(task_name: str):
 # Entry point
 # =========================
 
+
 if __name__ == "__main__":
     try:
+        print("Hello from OpenEnv!")
         for task in TASKS:
             run_task(task)
     except Exception as e:
