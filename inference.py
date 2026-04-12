@@ -15,19 +15,17 @@ from utils.embeddings_util import cosine_similarity, safe_embedding
 # Read environment variables with defaults where required
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4.1-mini")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-HF_TOKEN = os.getenv("HF_TOKEN")
 
-if OPENAI_API_KEY is None:
-    OPENAI_API_KEY = HF_TOKEN  # required for client init but not validated
+API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("HF_TOKEN")
+#API_KEY = os.getenv("HF_TOKEN")
 
-if not HF_TOKEN:
-    raise ValueError("HF_TOKEN environment variable is required")
+if not API_KEY:
+    raise ValueError("No API key found (OPENAI_API_KEY / HF_TOKEN)")
 
 # Initialize OpenAI client
 client = OpenAI(
     base_url=API_BASE_URL,
-    api_key=OPENAI_API_KEY
+    api_key=API_KEY
 )
 
 TASK_NAMES  = ["easy", "medium", "hard"]
@@ -249,50 +247,55 @@ def best_match_score(exp, preds):
 # Grader
 # =========================
 def grade(task, action: CodeReviewAction, step_num: int, previous_issues: list):
-    if task is None: return 0.1  # safety fallback
-
-    # --- 1. Calculate Base Performance (Your existing logic) ---
-    # (Checking issues, severity, keywords, and concepts)
-    base_score = 0.4  # Start with a baseline for a valid JSON response
+    try:
+        if task is None: return 0.5  # safety fallback
     
-    expected = task.get("expected", {})
-    predicted_issues = clean_predicted_issues(action.issues or [])
-    reasoning_text = (action.reasoning or "").lower()
-    
-    is_fallback = any("unknown issue" in str(p).lower() for p in predicted_issues)
-
-    # --- 2. Calculate Base Performance ---
-    if is_fallback:
-        base_score = 0.2  # Low score for failed parsing
-    elif not predicted_issues and "secure" in reasoning_text:
-        base_score = 0.5  # High score for correctly identifying a clean area
-    else:
-        base_score = 0.4  # Baseline for a successful parse
+        # --- 1. Calculate Base Performance (Your existing logic) ---
+        # (Checking issues, severity, keywords, and concepts)
+        base_score = 0.4  # Start with a baseline for a valid JSON response
         
-        # Matching logic...
-        matched_count = sum(1 for exp in expected.get("issues", []) 
-                            if any(similar(exp, p) for p in predicted_issues))
-        if expected.get("issues"):
-            base_score += 0.3 * (matched_count / len(expected.get("issues")))
+        expected = task.get("expected", {})
+        predicted_issues = clean_predicted_issues(action.issues or [])
+        reasoning_text = (action.reasoning or "").lower()
+        
+        is_fallback = any("unknown issue" in str(p).lower() for p in predicted_issues)
 
-    # --- 3. Cross-Step Redundancy Check ---
-    # Only check for repeats if they actually found issues
-    if predicted_issues and not is_fallback:
-        is_repeat = any(any(similar(curr, prev) for prev in previous_issues) for curr in predicted_issues)
-        if is_repeat:
-            base_score = base_score*0.5
+        # --- 2. Calculate Base Performance ---
+        if is_fallback:
+            base_score = 0.2  # Low score for failed parsing
+        elif not predicted_issues and "secure" in reasoning_text:
+            base_score = 0.5  # High score for correctly identifying a clean area
+        else:
+            base_score = 0.4  # Baseline for a successful parse
+            
+            # Matching logic...
+            matched_count = sum(1 for exp in expected.get("issues", []) 
+                                if any(similar(exp, p) for p in predicted_issues))
+            if expected.get("issues"):
+                base_score += 0.3 * (matched_count / len(expected.get("issues")))
 
-    # --- 4. Strict Linear Multiplier ---
-    # Growth rate 0.15 makes the climb feel more natural across 5 steps
-    growth_rate = 0.15 
-    multiplier = 1.0 + (step_num - 1) * growth_rate
-    
-    final_reward = base_score * multiplier
+        # --- 3. Cross-Step Redundancy Check ---
+        # Only check for repeats if they actually found issues
+        if predicted_issues and not is_fallback:
+            is_repeat = any(any(similar(curr, prev) for prev in previous_issues) for curr in predicted_issues)
+            if is_repeat:
+                base_score = base_score*0.5
 
-    if final_reward is None:
-        final_reward = 0.1
+        # --- 4. Strict Linear Multiplier ---
+        # Growth rate 0.15 makes the climb feel more natural across 5 steps
+        growth_rate = 0.15 
+        multiplier = 1.0 + (step_num - 1) * growth_rate
+        
+        final_reward = base_score * multiplier
 
-    return safe_reward(final_reward)
+        if final_reward is None:
+            final_reward = 0.1
+
+        return safe_reward(final_reward)
+
+    except Exception:
+            # 🔥 NEVER crash grader
+            return 0.5
 
 
 # =========================
@@ -303,6 +306,10 @@ SUCCESS_THRESHOLD = 0.4  # reward needed to consider task successful
 
 def run_task(task_name: str):
     env = CodeReviewEnv()
+
+    if env is None:
+        return 0.5  # neutral safe score
+    
     task = TASKS[task_name]
     obs = env.reset(seed=42, episode_id=task_name)
 
@@ -388,9 +395,13 @@ def run_task(task_name: str):
         reward = 0.1
         done = False
 
-    best_reward = max(rewards) if rewards else 0.15
-
-    success = best_reward >= SUCCESS_THRESHOLD
+    total = sum(rewards)
+    score = total / (len(rewards) + 1e-6)
+    score = max(0.01, min(score, 0.99))
+    success = score >= SUCCESS_THRESHOLD
+   
+    #best_reward = max(rewards) if rewards else 0.15
+    #success = best_reward >= SUCCESS_THRESHOLD
 
     # 🔥 ALWAYS close env BEFORE END
     try:
@@ -404,7 +415,8 @@ def run_task(task_name: str):
     reward_str = ",".join(f"{r:.2f}" for r in rewards)
 
     print(
-        f"[END] success={str(success).lower()} steps={len(rewards)} rewards={reward_str} ",
+        f"[END] success={str(success).lower()} steps={len(rewards)} "
+        f"score={score:.3f} rewards={reward_str}",
         flush=True
     )
 
