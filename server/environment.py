@@ -3,6 +3,9 @@ from tasks.task_definition import TASKS
 from models import CodeReviewAction, CodeReviewObservation, CodeReviewState
 import random
 from utils.embeddings_util import cosine_similarity, safe_embedding
+import traceback
+
+import logging
 
 class CodeReviewEnv:
 
@@ -35,14 +38,6 @@ class CodeReviewEnv:
         else:
             task_id = "easy"
 
-        '''#random tasks with more weights for easy tasks
-        task_id = random.choices(
-            ["easy", "medium", "hard"],
-            weights=[0.5, 0.3, 0.2]
-        )[0]'''
-
-        #task_id = "hard"  # for debugging
-
         task = TASKS[task_id]
         #task = self._get_task()
         #print("DEBUG TASK:", task)
@@ -57,13 +52,9 @@ class CodeReviewEnv:
             done=False
         )        
 
-
-        #print("🎯 Selected task:", task_id)  # debug
-        #print("🎯 Selected episode_id:", episode_id)  # debug
-
         return CodeReviewObservation(
             code=self._state.code,
-            score=0.0,
+            score=0.1,
             feedback="Start review",
             remaining_issues=self._state.remaining_issues   # ✅ ADD THIS
         )
@@ -77,10 +68,10 @@ class CodeReviewEnv:
             return (
                 CodeReviewObservation(
                     code=self._state.code,
-                    score=0.0,
+                    score=0.1,
                     feedback="Episode already finished"
                 ),
-                0.0,
+                0.1,
                 True,
                 {}
             )
@@ -181,15 +172,13 @@ class CodeReviewEnv:
                 c_emb = safe_embedding(concept)
                 concept_scores.append(cosine_similarity(c_emb, r_emb))
 
-            #concept_score = max(concept_scores) if concept_scores else 0
-            #concept_score = sum(concept_scores) / len(concepts) if concepts else 0
             concept_score = max(concept_scores) if concept_scores else 0
 
             # 4. Severity match
             expected_severity = task["expected"]["severity"]
             user_severity = action.severity
 
-            severity_score = 1.0 if user_severity == expected_severity else 0.6
+            severity_score = 0.99 if user_severity == expected_severity else 0.6
             
             # ------------------------
             # 1. Base score
@@ -234,8 +223,6 @@ class CodeReviewEnv:
             final_score = max(0, min(final_score, 1))
 
             #termination logic
-            #task_complete = len(state.remaining_issues) == 0
-            #task_complete = len(state.remaining_issues) <= (0.7 * len(gt_issues))
             task_complete = len(state.remaining_issues) < len(gt_issues) 
             time_limit_hit = state.step_count >= self.max_steps
             
@@ -281,10 +268,10 @@ class CodeReviewEnv:
         )
                     
         except Exception as e:
-            import traceback
-            print("❌ ERROR:", e)
-            traceback.print_exc()
-            raise
+            print("❌ ERROR IN STEP FUNCTION:")
+            traceback.print_exc() 
+            # This allows the app to stay alive but tells you WHY it failed in the console
+            raise e 
 
     async def reset_async(self):
         return self.reset()

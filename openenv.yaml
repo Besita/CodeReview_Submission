@@ -28,7 +28,7 @@ action_space:
 
 reward:
   type: float
-  range: [0.0, 1.0]
+  range: [0.1, 0.99]
   description: >
     Reward is based on semantic matching of issues, fix quality,
     reasoning alignment, and severity correctness.
